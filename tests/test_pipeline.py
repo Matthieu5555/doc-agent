@@ -208,7 +208,7 @@ class TestAPIPayload:
             workspace, doc_spec["path"], filename, SAMPLE_DOC_CONTENT
         )
 
-        with patch("openhands_doc.VersionPriorityEngine") as MockVPE:
+        with patch("doc_agent.generator.VersionPriorityEngine") as MockVPE:
             MockVPE.return_value.should_regenerate.return_value = (True, "test")
             result = gen.generate_document(
                 doc_spec, SAMPLE_BLUEPRINT,
@@ -326,7 +326,7 @@ class TestGenerateAllFlow:
         gen, MockConv, workspace, notes = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][0]
 
-        with patch("openhands_doc.VersionPriorityEngine") as MockVPE:
+        with patch("doc_agent.generator.VersionPriorityEngine") as MockVPE:
             MockVPE.return_value.should_regenerate.return_value = (False, "Fresh human edit")
 
             result = gen.generate_document(

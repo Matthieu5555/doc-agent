@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-# Ensure agent/ is importable
+# Ensure doc-agent/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
@@ -41,17 +41,17 @@ def generator(tmp_workspace, tmp_notes_dir, monkeypatch):
     """
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-fake")
     monkeypatch.setenv("NOTES_DIR", str(tmp_notes_dir))
-
+    monkeypatch.setenv("DOC_API_URL", "http://fake:9999")
 
     with (
-        patch("openhands_doc.LLM"),
-        patch("openhands_doc.Agent"),
-        patch("openhands_doc.Conversation") as MockConv,
-        patch("openhands_doc.DocumentRegistry"),
-        patch("openhands_doc.LocalDocumentStore") as MockAPI,
-        patch("openhands_doc.VersionPriorityEngine") as MockVPE,
+        patch("doc_agent.generator.LLM"),
+        patch("doc_agent.generator.Agent"),
+        patch("doc_agent.generator.Conversation") as MockConv,
+        patch("doc_agent.generator.DocumentRegistry"),
+        patch("doc_agent.generator.DocumentAPIClient") as MockAPI,
+        patch("doc_agent.generator.VersionPriorityEngine") as MockVPE,
     ):
-        from openhands_doc import OpenHandsDocGenerator
+        from doc_agent.generator import OpenHandsDocGenerator
 
         MockVPE.return_value.should_regenerate.return_value = (True, "No existing document found")
 

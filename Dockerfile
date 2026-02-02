@@ -17,10 +17,11 @@ ENV PATH="/root/.local/bin:$PATH"
 # Create workspace
 WORKDIR /workspace
 
-# Copy Python project files to temp location
-COPY pyproject.toml uv.lock /tmp/
+# Copy project
+COPY pyproject.toml /tmp/
+COPY doc_agent/ /tmp/doc_agent/
 
-# Install dependencies with uv in a persistent location
+# Install dependencies with uv
 RUN cd /tmp && uv sync --no-install-project && \
     cp -r .venv /opt/venv
 
@@ -29,7 +30,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 ENV VIRTUAL_ENV="/opt/venv"
 
 # Set up git config
-RUN git config --global user.email "agent@autodoc.local" && \
-    git config --global user.name "AutoDoc Agent"
+RUN git config --global user.email "agent@doc-agent.local" && \
+    git config --global user.name "DocAgent"
 
 CMD ["tail", "-f", "/dev/null"]

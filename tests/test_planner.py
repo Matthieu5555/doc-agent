@@ -112,7 +112,7 @@ class TestFallbackPlan:
     def test_small_repo(self, generator):
         gen, _, workspace, _ = generator
 
-        with patch("openhands_doc.subprocess.run") as mock_run:
+        with patch("doc_agent.generator.subprocess.run") as mock_run:
             # Simulate 5 source files
             mock_run.return_value = MagicMock(stdout="a.py\nb.py\nc.py\nd.py\ne.py", returncode=0)
             result = gen._fallback_plan("test/repo")
@@ -127,7 +127,7 @@ class TestFallbackPlan:
     def test_large_repo(self, generator):
         gen, _, workspace, _ = generator
 
-        with patch("openhands_doc.subprocess.run") as mock_run:
+        with patch("doc_agent.generator.subprocess.run") as mock_run:
             # Simulate 60 source files
             lines = "\n".join(f"file{i}.py" for i in range(60))
             mock_run.return_value = MagicMock(stdout=lines, returncode=0)

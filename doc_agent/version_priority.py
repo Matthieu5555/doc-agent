@@ -8,8 +8,8 @@ AI-generated documentation fresh.
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any
-from local_store import LocalDocumentStore
-from repo_monitor import has_significant_changes, get_repo_unchanged_status
+from doc_agent.api_client import DocumentAPIClient
+from doc_agent.repo_monitor import has_significant_changes, get_repo_unchanged_status
 
 
 class VersionPriorityEngine:
@@ -26,7 +26,7 @@ class VersionPriorityEngine:
     7. AI doc >= 30 days OR repo changed → REGENERATE
     """
 
-    def __init__(self, api_client: "LocalDocumentStore", repo_path: Path):
+    def __init__(self, api_client: DocumentAPIClient, repo_path: Path):
         """
         Initialize priority engine.
 

@@ -1,17 +1,21 @@
 [project]
-name = "auto-doc-agent"
+name = "doc-agent"
 version = "0.1.0"
-description = "Automated documentation generation for GitHub repositories using Claude via OpenRouter"
+description = "Three-tier autonomous documentation generator using OpenHands SDK"
 requires-python = ">=3.12"
 dependencies = [
     "openhands-ai>=0.9.0",
+    "requests>=2.31.0",
     "gitpython>=3.1.40",
     "python-dotenv>=1.0.0",
     "litellm>=1.0.0",
 ]
 
+[project.scripts]
+doc-agent = "doc_agent.generator:main"
+
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+packages = ["doc_agent"]
 
 [build-system]
 requires = ["hatchling"]
@@ -20,4 +24,5 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "responses>=0.25",
 ]

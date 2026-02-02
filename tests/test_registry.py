@@ -5,7 +5,7 @@ These are pure functions — no mocking needed.
 
 import pytest
 
-from doc_registry import generate_doc_id, parse_frontmatter, parse_bottomatter
+from doc_agent.registry import generate_doc_id, parse_frontmatter, parse_bottomatter
 
 
 # ---------------------------------------------------------------------------

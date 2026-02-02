@@ -17,8 +17,8 @@ Architecture:
     reports and writes one document in flowing professional prose.
 
 Usage:
-    python openhands_doc.py --repo https://github.com/user/repo
-    python openhands_doc.py --repo https://github.com/user/repo --collection backend/
+    doc-agent --repo https://github.com/user/repo
+    doc-agent --repo https://github.com/user/repo --collection backend/
 """
 
 import json
@@ -40,7 +40,7 @@ from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 
 # Document registry for ID-based tracking
-from doc_registry import (
+from doc_agent.registry import (
     generate_doc_id,
     find_document_by_id,
     create_document_with_metadata,
@@ -49,17 +49,17 @@ from doc_registry import (
     parse_bottomatter,
 )
 
-# Local document store (filesystem-based)
-from local_store import LocalDocumentStore
+# API client for posting to backend
+from doc_agent.api_client import DocumentAPIClient
 
 # Version priority logic for intelligent regeneration
-from version_priority import VersionPriorityEngine
+from doc_agent.version_priority import VersionPriorityEngine
 
 # Security modules
-from security import RepositoryValidator, PathValidator
+from doc_agent.security import RepositoryValidator, PathValidator
 
 # Model constraint resolution
-from model_config import resolve_model_config
+from doc_agent.model_config import resolve_model_config
 
 # ---------------------------------------------------------------------------
 # Model Configuration
@@ -436,12 +436,12 @@ class OpenHandsDocGenerator:
         )
 
         # Configurable output directory
-        self.notes_dir = Path(os.getenv("OUTPUT_DIR", os.getenv("NOTES_DIR", "./output"))).resolve()
+        self.notes_dir = Path(os.getenv("NOTES_DIR", "./notes")).resolve()
         self.notes_dir.mkdir(parents=True, exist_ok=True)
 
         # Registry & API client
         self.registry = DocumentRegistry()
-        self.api_client = LocalDocumentStore(output_dir=self.notes_dir)
+        self.api_client = DocumentAPIClient()
 
         # Load environment
         load_dotenv()
@@ -471,6 +471,12 @@ class OpenHandsDocGenerator:
             native_tool_calling=LLM_NATIVE_TOOL_CALLING,
             timeout=900,
             max_output_tokens=self._scout_config.max_output_tokens,
+            reasoning_effort="none",
+            enable_encrypted_reasoning=False,
+            # OpenRouter: middle-out transform handles provider-specific message
+            # format issues (e.g. Moonshot AI requiring reasoning_content in
+            # assistant tool call messages)
+            litellm_extra_body={"thinking": {"type": "disabled"}},
             **scout_kwargs,
         )
         # Condenser max_size derived from context window:
@@ -497,6 +503,9 @@ class OpenHandsDocGenerator:
             model=PLANNER_MODEL,
             timeout=900,
             max_output_tokens=planner_output,
+            reasoning_effort="none",
+            enable_encrypted_reasoning=False,
+            litellm_extra_body={"thinking": {"type": "disabled"}},
             **_llm_kwargs("PLANNER"),
         )
 
@@ -507,6 +516,9 @@ class OpenHandsDocGenerator:
             native_tool_calling=LLM_NATIVE_TOOL_CALLING,
             timeout=900,
             max_output_tokens=self._writer_config.max_output_tokens,
+            reasoning_effort="none",
+            enable_encrypted_reasoning=False,
+            litellm_extra_body={"thinking": {"type": "disabled"}},
             **writer_kwargs,
         )
         writer_condenser_size = max(20, self._writer_config.context_window // 4000)
@@ -1830,7 +1842,7 @@ OUTPUT:
             traceback.print_exc()
             return {"status": "error", "error": str(e)}
 
-    def generate_all(self) -> dict:
+    def generate_all(self, force: bool = False) -> dict:
         """
         Full pipeline: Scouts explore → Planner thinks → Writers execute.
         """
@@ -1851,7 +1863,7 @@ OUTPUT:
             if not regen_ctx["git_diff"].strip() and not regen_ctx["git_log"].strip():
                 # Repo hasn't moved — check if any doc is actually stale
                 current_sha = self._get_current_commit_sha()
-                if regen_ctx["last_commit_sha"] == current_sha:
+                if regen_ctx["last_commit_sha"] == current_sha and not force:
                     print("\n[Pipeline] Repository unchanged since last generation — nothing to do.")
                     return results
 
@@ -2004,6 +2016,11 @@ Examples:
         action="store_true",
         help="Disable native tool calling (use text-based fallback)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force regeneration even if repo is unchanged since last run",
+    )
     args = parser.parse_args()
 
     # Override config if specified via CLI
@@ -2037,7 +2054,7 @@ Examples:
         sys.exit(1)
 
     print("=" * 70)
-    print("[IsoCrates] THREE-TIER AUTONOMOUS DOCUMENTATION GENERATOR")
+    print("[DocAgent] THREE-TIER AUTONOMOUS DOCUMENTATION GENERATOR")
     print("=" * 70)
     print(f"Repository: {sanitized_url}")
     if sanitized_collection:
@@ -2058,7 +2075,7 @@ Examples:
     generator = OpenHandsDocGenerator(repo_path, sanitized_url, sanitized_collection)
 
     if args.doc_type == "auto":
-        results = generator.generate_all()
+        results = generator.generate_all(force=args.force)
     else:
         # Single doc mode — run scouts + planner for context, then one writer
         scout_reports = generator._run_scouts()

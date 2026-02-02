@@ -1,4 +1,4 @@
-"""Security module for IsoCrates agent."""
+"""Security module for doc-agent."""
 
 from .validators import RepositoryValidator, PathValidator
 from .prompt_safety import PromptInjectionDetector

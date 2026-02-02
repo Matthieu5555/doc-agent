@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """
-Document Registry - ID-based tracking system for generated documentation
+Document Registry - ID-based tracking system for generated documentation.
 
-This allows users to move/rename documents in SilverBullet without breaking
-our ability to find and update them. Each document has a unique ID in its
-frontmatter, and we maintain a registry for fast lookups.
+Each document has a unique ID in its metadata, and the registry maintains
+a JSON index for fast lookups.
 """
 
 import json
 import hashlib
-import os
 from pathlib import Path
 from typing import Optional, Dict, List
 from datetime import datetime
 import re
 
 
-REGISTRY_FILE = Path(os.getenv("OUTPUT_DIR", "./output")) / ".doc_registry.json"
+REGISTRY_FILE = Path.home() / ".doc-agent" / "registry.json"
 
 
 def generate_doc_id(repo_url: str, path: str = "", title: str = "", doc_type: str = "") -> str:
@@ -119,7 +117,7 @@ def parse_bottomatter(content: str) -> tuple[Optional[Dict], str]:
     return metadata, body
 
 
-def find_document_by_id(doc_id: str, notes_dir: Path = Path(os.getenv("OUTPUT_DIR", "./output"))) -> Optional[Path]:
+def find_document_by_id(doc_id: str, notes_dir: Path = Path("/notes")) -> Optional[Path]:
     """
     Search for a document with the given ID by scanning metadata (frontmatter or bottomatter).
 
