@@ -36,7 +36,6 @@ from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 
 # Document registry for ID-based tracking
@@ -48,12 +47,6 @@ from doc_agent.registry import (
     parse_frontmatter,
     parse_bottomatter,
 )
-
-# API client for posting to backend
-from doc_agent.api_client import DocumentAPIClient
-
-# Version priority logic for intelligent regeneration
-from doc_agent.version_priority import VersionPriorityEngine
 
 # Security modules
 from doc_agent.security import RepositoryValidator, PathValidator
@@ -425,7 +418,7 @@ class OpenHandsDocGenerator:
     Tier 2 (Writers):  Write each document from planner briefs.
     """
 
-    def __init__(self, repo_path: Path, repo_url: str, collection: str = ""):
+    def __init__(self, repo_path: Path, repo_url: str, collection: str = "", output_dir: str | None = None):
         self.repo_path = repo_path.resolve()
         self.repo_url = repo_url
         self.repo_name = repo_path.name
@@ -436,12 +429,12 @@ class OpenHandsDocGenerator:
         )
 
         # Configurable output directory
-        self.notes_dir = Path(os.getenv("NOTES_DIR", "./notes")).resolve()
-        self.notes_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = Path(output_dir or os.getenv("OUTPUT_DIR", "./output")).resolve()
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.notes_dir = self.output_dir  # Alias for writer brief paths
 
-        # Registry & API client
+        # Registry
         self.registry = DocumentRegistry()
-        self.api_client = DocumentAPIClient()
 
         # Load environment
         load_dotenv()
@@ -532,7 +525,6 @@ class OpenHandsDocGenerator:
             tools=[
                 Tool(name=TerminalTool.name),
                 Tool(name=FileEditorTool.name),
-                Tool(name=TaskTrackerTool.name),
             ],
             condenser=writer_condenser,
         )
@@ -551,33 +543,43 @@ class OpenHandsDocGenerator:
     # ------------------------------------------------------------------
 
     def _discover_existing_documents(self) -> dict:
-        """Query the API for existing documents (for cross-referencing)."""
-        try:
-            all_docs = self.api_client.get_all_documents()
-            related_docs = [
-                doc
-                for doc in all_docs
-                if doc.get("collection", "").rstrip("/")
-                == self.collection.rstrip("/")
-            ] if self.collection else []
-            return {
-                "all_docs": all_docs,
-                "related_docs": related_docs,
-                "count": len(all_docs),
-                "related_count": len(related_docs),
-            }
-        except Exception as e:
-            print(f"[Warning] Could not discover existing documents: {e}")
-            return {
-                "all_docs": [],
-                "related_docs": [],
-                "count": 0,
-                "related_count": 0,
-            }
+        """Scan the output directory for existing .md files and parse their metadata."""
+        all_docs = []
+        for md_file in self.output_dir.rglob("*.md"):
+            try:
+                content = md_file.read_text()
+                metadata, body = parse_bottomatter(content)
+                if not metadata:
+                    metadata, body = parse_frontmatter(content)
+                if not metadata:
+                    metadata = {}
+                all_docs.append({
+                    "id": metadata.get("id", ""),
+                    "title": metadata.get("title", md_file.stem.replace("-", " ").title()),
+                    "doc_type": metadata.get("doc_type", "unknown"),
+                    "collection": metadata.get("collection", ""),
+                    "repo_url": metadata.get("repo_url", ""),
+                    "repo_name": metadata.get("repo_name", ""),
+                    "file_path": str(md_file),
+                })
+            except Exception:
+                continue
+
+        related_docs = [
+            doc for doc in all_docs
+            if doc.get("collection", "").rstrip("/") == self.collection.rstrip("/")
+        ] if self.collection else []
+
+        return {
+            "all_docs": all_docs,
+            "related_docs": related_docs,
+            "count": len(all_docs),
+            "related_count": len(related_docs),
+        }
 
     def _build_document_context(self, discovery: dict) -> str:
         """Format existing documents for inclusion in prompts."""
-        from security import PromptInjectionDetector
+        from doc_agent.security import PromptInjectionDetector
         from collections import defaultdict
 
         if discovery["count"] == 0:
@@ -621,39 +623,41 @@ class OpenHandsDocGenerator:
             "git_log": str,        # commit log since last generation
           }
         """
-        existing_list = self.api_client.get_documents_by_repo(self.repo_url)
-        if not existing_list:
-            return None
-
-        print(f"[Regen] Found {len(existing_list)} existing doc(s) for this repo")
-
-        # Fetch full content for each doc
         existing_docs = []
         last_commit_sha = None
-        for doc_summary in existing_list:
-            doc_id = doc_summary.get("id")
-            if not doc_id:
-                continue
-            full_doc = self.api_client.get_document(doc_id)
-            if not full_doc:
-                continue
-            existing_docs.append({
-                "title": full_doc.get("title", ""),
-                "doc_type": full_doc.get("doc_type", ""),
-                "content": full_doc.get("content", ""),
-            })
 
-            # Get the commit SHA from version history
-            if not last_commit_sha:
-                versions = self.api_client.get_document_versions(doc_id)
-                if versions:
-                    meta = versions[0].get("author_metadata", {})
-                    sha = meta.get("repo_commit_sha")
+        for md_file in self.output_dir.rglob("*.md"):
+            try:
+                content = md_file.read_text()
+                metadata, body = parse_bottomatter(content)
+                if not metadata:
+                    metadata, body = parse_frontmatter(content)
+                if not metadata:
+                    continue
+
+                # Only include docs for this repo
+                doc_repo = metadata.get("repo_url", "")
+                if doc_repo and doc_repo != self.repo_url:
+                    continue
+
+                existing_docs.append({
+                    "title": metadata.get("title", md_file.stem),
+                    "doc_type": metadata.get("doc_type", ""),
+                    "content": body,
+                })
+
+                # Extract commit SHA from metadata
+                if not last_commit_sha:
+                    sha = metadata.get("repo_commit_sha")
                     if sha and sha != "unknown":
                         last_commit_sha = sha
+            except Exception:
+                continue
 
         if not existing_docs:
             return None
+
+        print(f"[Regen] Found {len(existing_docs)} existing doc(s) for this repo")
 
         # Get git diff and log since last generation
         git_diff = ""
@@ -698,7 +702,7 @@ class OpenHandsDocGenerator:
 
         if not git_diff.strip() and not git_log.strip():
             print("[Regen] No changes detected since last generation")
-            # Still return context so version_priority can decide per-doc
+            # Still return context so generate_all can check the commit SHA
             return {
                 "last_commit_sha": last_commit_sha,
                 "existing_docs": existing_docs,
@@ -1536,6 +1540,8 @@ OUTPUT:
     def _snapshot_existing_docs(self) -> dict:
         """Take a pre-generation snapshot of all docs belonging to this repo.
 
+        Scans the output directory for .md files with matching repo_url metadata.
+
         Returns a dict with:
             doc_ids: set of all doc IDs for this repo
             by_id: dict mapping doc_id → doc summary
@@ -1544,37 +1550,48 @@ OUTPUT:
         Returns empty sets on any failure (cleanup will be skipped).
         """
         try:
-            existing = self.api_client.get_documents_by_repo(self.repo_url)
-            if not existing:
-                return {"doc_ids": set(), "by_id": {}, "human_edited": set(), "count": 0}
-
             doc_ids = set()
             by_id = {}
             human_edited = set()
 
-            for doc in existing:
-                doc_id = doc.get("id")
-                if not doc_id:
-                    continue
-                doc_ids.add(doc_id)
-                by_id[doc_id] = doc
-
-                # Check version history for human edits within 7 days
+            for md_file in self.output_dir.rglob("*.md"):
                 try:
-                    versions = self.api_client.get_document_versions(doc_id)
-                    for version in versions:
-                        author_type = version.get("author_type", "")
-                        if author_type == "human":
-                            created = version.get("created_at", "")
-                            if created:
+                    content = md_file.read_text()
+                    metadata, _ = parse_bottomatter(content)
+                    if not metadata:
+                        metadata, _ = parse_frontmatter(content)
+                    if not metadata:
+                        continue
+
+                    doc_repo = metadata.get("repo_url", "")
+                    if doc_repo and doc_repo != self.repo_url:
+                        continue
+
+                    doc_id = metadata.get("id")
+                    if not doc_id:
+                        continue
+
+                    doc_ids.add(doc_id)
+                    by_id[doc_id] = {
+                        "id": doc_id,
+                        "title": metadata.get("title", md_file.stem),
+                        "file_path": str(md_file),
+                    }
+
+                    author_type = metadata.get("author_type", "ai")
+                    if author_type == "human":
+                        generated_at = metadata.get("generated_at", "")
+                        if generated_at:
+                            try:
                                 from datetime import timezone
-                                version_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                                version_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
                                 age = datetime.now(timezone.utc) - version_dt
                                 if age.days < 7:
                                     human_edited.add(doc_id)
-                                    break
+                            except Exception:
+                                pass
                 except Exception:
-                    pass  # If we can't check versions, don't mark as human-edited
+                    continue
 
             print(f"[Snapshot] {len(doc_ids)} existing doc(s) for this repo, {len(human_edited)} human-edited (7d)")
             return {
@@ -1632,15 +1649,19 @@ OUTPUT:
 
         print(f"[Cleanup] Deleting {len(to_delete)} orphaned doc(s)...")
         for doc_id in to_delete:
-            title = snapshot["by_id"].get(doc_id, {}).get("title", doc_id)
+            doc_info = snapshot["by_id"].get(doc_id, {})
+            title = doc_info.get("title", doc_id)
+            file_path = doc_info.get("file_path")
             print(f"   - {title} ({doc_id})")
-
-        delete_result = self.api_client.batch_delete(list(to_delete))
-        result["deleted"] = delete_result.get("succeeded", 0)
-        result["errors"] = delete_result.get("errors", [])
+            if file_path:
+                try:
+                    Path(file_path).unlink(missing_ok=True)
+                    result["deleted"] += 1
+                except Exception as e:
+                    result["errors"].append(f"Failed to delete {file_path}: {e}")
 
         if result["errors"]:
-            print(f"[Cleanup] Batch delete had errors: {result['errors']}")
+            print(f"[Cleanup] Delete had errors: {result['errors']}")
 
         print(f"[Cleanup] Done: {result['deleted']} deleted, {result['preserved_human']} preserved (human), {result['preserved_failed']} preserved (failed)")
         return result
@@ -1693,19 +1714,6 @@ OUTPUT:
         print(f"[Writer] GENERATING: {title} ({doc_type})")
         print(f"{'='*70}")
         print(f"   Doc ID: {doc_id}")
-
-        # Check version priority
-        priority_engine = VersionPriorityEngine(
-            api_client=self.api_client, repo_path=self.repo_path
-        )
-        should_generate, reason = priority_engine.should_regenerate(
-            doc_id=doc_id, current_commit_sha=commit_sha
-        )
-        if not should_generate:
-            print(f"   [Skip] {reason}")
-            return {"status": "skipped", "reason": reason, "doc_id": doc_id}
-
-        print(f"   [Generate] {reason}")
 
         # Build writer brief (now includes scout reports)
         brief = self._build_writer_brief(doc_spec, blueprint, discovery, scout_reports)
@@ -1784,57 +1792,47 @@ OUTPUT:
             if wikilink_count < 5:
                 print(f"   [Content] Warning: low wikilink count ({wikilink_count}) — pages should have 10-20+")
 
-            keywords = DOCUMENT_TYPES.get(doc_type, {}).get("keywords", [])
-
-            # POST to API
-            doc_data = {
-                "repo_url": self.repo_url,
-                "repo_name": self.repo_name,
-                "path": doc_path,
-                "title": title,
-                "doc_type": doc_type,
-                "content": clean_content,
-                "keywords": keywords,
-                "author_type": "ai",
-                "author_metadata": {
+            # Write to output directory with bottomatter metadata
+            final_content = create_document_with_metadata(
+                content=clean_content,
+                doc_id=doc_id,
+                repo_url=self.repo_url,
+                doc_type=doc_type,
+                collection=self.collection,
+                additional_metadata={
+                    "title": title,
+                    "author_type": "ai",
+                    "repo_commit_sha": commit_sha,
                     "generator": "openhands-three-tier",
                     "scout_model": SCOUT_MODEL,
                     "planner_model": PLANNER_MODEL,
                     "writer_model": WRITER_MODEL,
-                    "repo_commit_sha": commit_sha,
                 },
+            )
+
+            final_output = self.output_dir / doc_path / output_filename
+            final_output.parent.mkdir(parents=True, exist_ok=True)
+            final_output.write_text(final_content)
+
+            content_size = len(clean_content.encode("utf-8"))
+            print(f"   [Success] Written to {final_output}")
+            print(f"   Size: {content_size:,} bytes")
+
+            # Register in local registry
+            self.registry.register_document(
+                doc_id=doc_id,
+                repo_url=self.repo_url,
+                doc_type=doc_type,
+                file_path=str(final_output),
+            )
+
+            return {
+                "status": "success",
+                "doc_id": doc_id,
+                "method": "filesystem",
+                "size": content_size,
+                "file": str(final_output),
             }
-
-            try:
-                api_result = self.api_client.create_or_update_document(
-                    doc_data=doc_data, fallback_path=output_file
-                )
-                content_size = len(clean_content.encode("utf-8"))
-
-                if api_result.get("method") == "filesystem":
-                    print(f"   [Fallback] Saved to file (API unavailable)")
-                else:
-                    print(f"   [Success] Posted to API")
-                    print(f"   ID: {api_result.get('id', doc_id)}")
-
-                print(f"   Size: {content_size:,} bytes")
-
-                return {
-                    "status": "success",
-                    "doc_id": api_result.get("id", doc_id),
-                    "method": api_result.get("method", "api"),
-                    "size": content_size,
-                    "api_result": api_result,
-                }
-
-            except Exception as e:
-                print(f"   [Error] Failed to post: {e}")
-                return {
-                    "status": "error_fallback",
-                    "doc_id": doc_id,
-                    "error": str(e),
-                    "file": str(output_file),
-                }
 
         except Exception as e:
             print(f"   [Error] Generation failed: {e}")
@@ -1842,7 +1840,7 @@ OUTPUT:
             traceback.print_exc()
             return {"status": "error", "error": str(e)}
 
-    def generate_all(self, force: bool = False) -> dict:
+    def generate_all(self) -> dict:
         """
         Full pipeline: Scouts explore → Planner thinks → Writers execute.
         """
@@ -1863,7 +1861,7 @@ OUTPUT:
             if not regen_ctx["git_diff"].strip() and not regen_ctx["git_log"].strip():
                 # Repo hasn't moved — check if any doc is actually stale
                 current_sha = self._get_current_commit_sha()
-                if regen_ctx["last_commit_sha"] == current_sha and not force:
+                if regen_ctx["last_commit_sha"] == current_sha:
                     print("\n[Pipeline] Repository unchanged since last generation — nothing to do.")
                     return results
 
@@ -1970,12 +1968,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --repo https://github.com/facebook/react
-  %(prog)s --repo https://github.com/django/django --collection backend
-  %(prog)s --repo https://github.com/user/repo --doc-type quickstart
+  %(prog)s https://github.com/facebook/react
+  %(prog)s /path/to/local/repo
+  %(prog)s https://github.com/user/repo -o ./docs
+  %(prog)s /path/to/repo --collection backend --doc-type architecture
         """,
     )
-    parser.add_argument("--repo", required=True, help="GitHub repository URL")
+    parser.add_argument("repo", help="Repository URL (clones it) or local directory path")
+    parser.add_argument(
+        "-o", "--output",
+        default="./output",
+        help="Output directory for generated markdown (default: ./output)",
+    )
     parser.add_argument(
         "--collection",
         default="",
@@ -1986,40 +1990,15 @@ Examples:
         default="auto",
         help="Document type to generate, or 'auto' for full pipeline (default: auto)",
     )
-    parser.add_argument(
-        "--planner-model",
-        default=None,
-        help="Override planner model",
-    )
-    parser.add_argument(
-        "--writer-model",
-        default=None,
-        help="Override writer model",
-    )
-    parser.add_argument(
-        "--scout-model",
-        default=None,
-        help="Override scout model",
-    )
-    parser.add_argument(
-        "--base-url",
-        default=None,
-        help="Override global LLM base URL (default: http://localhost:11434)",
-    )
-    parser.add_argument(
-        "--api-key",
-        default=None,
-        help="Override global LLM API key",
-    )
+    parser.add_argument("--planner-model", default=None, help="Override planner model")
+    parser.add_argument("--writer-model", default=None, help="Override writer model")
+    parser.add_argument("--scout-model", default=None, help="Override scout model")
+    parser.add_argument("--base-url", default=None, help="Override global LLM base URL")
+    parser.add_argument("--api-key", default=None, help="Override global LLM API key")
     parser.add_argument(
         "--no-native-tools",
         action="store_true",
         help="Disable native tool calling (use text-based fallback)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force regeneration even if repo is unchanged since last run",
     )
     args = parser.parse_args()
 
@@ -2037,12 +2016,40 @@ Examples:
     if args.no_native_tools:
         os.environ["LLM_NATIVE_TOOL_CALLING"] = "false"
 
-    # SECURITY: Validate repository URL
-    validator = RepositoryValidator()
-    is_valid, error, sanitized_url = validator.validate_repo_url(args.repo)
-    if not is_valid:
-        print(f"[Security] Repository URL validation failed: {error}")
-        sys.exit(1)
+    # Determine if input is a local path or URL
+    repo_input = args.repo
+    local_path = Path(repo_input)
+
+    if local_path.is_dir():
+        # Local directory mode
+        repo_path = local_path.resolve()
+        repo_url = f"local://{repo_path}"
+
+        print("=" * 70)
+        print("[DocAgent] THREE-TIER AUTONOMOUS DOCUMENTATION GENERATOR")
+        print("=" * 70)
+        print(f"Repository: {repo_path} (local)")
+    else:
+        # URL mode — validate and clone
+        validator = RepositoryValidator()
+        is_valid, error, sanitized_url = validator.validate_repo_url(repo_input)
+        if not is_valid:
+            print(f"[Security] Repository URL validation failed: {error}")
+            sys.exit(1)
+        repo_url = sanitized_url
+
+        print("=" * 70)
+        print("[DocAgent] THREE-TIER AUTONOMOUS DOCUMENTATION GENERATOR")
+        print("=" * 70)
+        print(f"Repository: {repo_url}")
+
+        repos_dir = Path(os.getenv("REPOS_DIR", "./repos"))
+        repos_dir.mkdir(exist_ok=True)
+        try:
+            repo_path = clone_repo(repo_url, repos_dir)
+        except subprocess.CalledProcessError as e:
+            print(f"[Error] Failed to clone repository: {e}")
+            sys.exit(1)
 
     # SECURITY: Validate collection path
     path_validator = PathValidator()
@@ -2053,29 +2060,19 @@ Examples:
         print(f"[Security] Collection validation failed: {error}")
         sys.exit(1)
 
-    print("=" * 70)
-    print("[DocAgent] THREE-TIER AUTONOMOUS DOCUMENTATION GENERATOR")
-    print("=" * 70)
-    print(f"Repository: {sanitized_url}")
     if sanitized_collection:
         print(f"Collection: {sanitized_collection}")
+    print(f"Output: {Path(args.output).resolve()}")
     print()
 
-    # Clone repository
-    repos_dir = Path(os.getenv("REPOS_DIR", "./repos"))
-    repos_dir.mkdir(exist_ok=True)
-
-    try:
-        repo_path = clone_repo(sanitized_url, repos_dir)
-    except subprocess.CalledProcessError as e:
-        print(f"[Error] Failed to clone repository: {e}")
-        sys.exit(1)
-
     # Generate
-    generator = OpenHandsDocGenerator(repo_path, sanitized_url, sanitized_collection)
+    generator = OpenHandsDocGenerator(
+        repo_path, repo_url, sanitized_collection,
+        output_dir=args.output,
+    )
 
     if args.doc_type == "auto":
-        results = generator.generate_all(force=args.force)
+        results = generator.generate_all()
     else:
         # Single doc mode — run scouts + planner for context, then one writer
         scout_reports = generator._run_scouts()
@@ -2116,10 +2113,8 @@ Examples:
         results = {doc_spec["title"]: result}
 
     # Final output
-    api_url = os.getenv("DOC_API_URL", "http://localhost:8000")
-    print(f"\n[Info] Documentation available at:")
-    print(f"   API: {api_url}/api/docs")
-    print(f"   Frontend: http://localhost:3000\n")
+    output_path = Path(args.output).resolve()
+    print(f"\n[Done] Documentation written to: {output_path}\n")
 
 
 if __name__ == "__main__":

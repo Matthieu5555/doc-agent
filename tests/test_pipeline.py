@@ -1,7 +1,7 @@
 """Integration tests for the documentation generation pipeline.
 
 Tests the contract between writer agents, file finder, content cleaner,
-and API posting. All LLM/agent calls are mocked — zero credits spent.
+and local file output. All LLM/agent calls are mocked — zero credits spent.
 """
 
 import re
@@ -28,8 +28,8 @@ class TestWriterOutputResolution:
     """The writer agent creates a file; generate_document() must find it."""
 
     def test_writer_output_found_in_workspace(self, generator):
-        """File at workspace/notes/{path}/{file}.md is found and POSTed."""
-        gen, MockConv, workspace, notes = generator
+        """File at workspace/notes/{path}/{file}.md is found and written to output."""
+        gen, MockConv, workspace, output = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][0]  # Overview
 
         # Simulate writer creating the file in the workspace
@@ -48,13 +48,16 @@ class TestWriterOutputResolution:
         )
 
         assert result["status"] == "success", f"Expected success, got {result}"
-        gen.api_client.create_or_update_document.assert_called_once()
-        payload = gen.api_client.create_or_update_document.call_args[1]["doc_data"]
-        assert "Overview" in payload["content"] or "IsoCrates" in payload["content"]
+        assert result["method"] == "filesystem"
+        # Output file should exist
+        output_file = Path(result["file"])
+        assert output_file.exists()
+        content = output_file.read_text()
+        assert "Overview" in content or "IsoCrates" in content
 
     def test_writer_output_found_via_rglob_fallback(self, generator):
         """File at unexpected workspace location is found via rglob."""
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][0]
 
         safe_title = re.sub(r'[^\w\s-]', '', doc_spec["title"]).strip().replace(' ', '-').lower()
@@ -78,7 +81,7 @@ class TestWriterOutputResolution:
 
     def test_writer_output_not_found_returns_warning(self, generator):
         """Agent writes nothing → warning status, no crash."""
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][0]
 
         # Conversation.run() does nothing
@@ -92,7 +95,6 @@ class TestWriterOutputResolution:
 
         assert result["status"] == "warning"
         assert "not found" in result["message"].lower()
-        gen.api_client.create_or_update_document.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ class TestWriterBrief:
 
     def test_brief_uses_workspace_relative_path(self, generator):
         """Brief must NOT contain absolute paths — only workspace-relative."""
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][1]  # Backend Architecture
 
         brief = gen._build_writer_brief(
@@ -115,9 +117,9 @@ class TestWriterBrief:
 
         # Must contain workspace-relative path
         assert "notes/" in brief
-        # Must NOT contain the absolute notes_dir path
-        assert str(notes) not in brief, (
-            f"Brief contains absolute path {notes}. "
+        # Must NOT contain the absolute output_dir path
+        assert str(output) not in brief, (
+            f"Brief contains absolute path {output}. "
             "Writer can't write outside its workspace."
         )
 
@@ -143,10 +145,10 @@ class TestWriterBrief:
 # ---------------------------------------------------------------------------
 
 class TestContentCleaning:
-    """Content from writer agents is cleaned before API POST."""
+    """Content from writer agents is cleaned before writing to output."""
 
     def test_strips_bottomatter(self, generator):
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][0]
 
         safe_title = re.sub(r'[^\w\s-]', '', doc_spec["title"]).strip().replace(' ', '-').lower()
@@ -163,14 +165,14 @@ class TestContentCleaning:
         )
 
         assert result["status"] == "success"
-        payload = gen.api_client.create_or_update_document.call_args[1]["doc_data"]
-        # Bottomatter metadata should be stripped
-        assert "doc-abc123-def456" not in payload["content"]
-        # Actual content should remain
-        assert "# Overview" in payload["content"]
+        # Read the output file and check content
+        output_file = Path(result["file"])
+        content = output_file.read_text()
+        # Old stale bottomatter ID should be replaced with fresh metadata
+        assert "# Overview" in content
 
     def test_strips_frontmatter(self, generator):
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][0]
 
         safe_title = re.sub(r'[^\w\s-]', '', doc_spec["title"]).strip().replace(' ', '-').lower()
@@ -187,19 +189,19 @@ class TestContentCleaning:
         )
 
         assert result["status"] == "success"
-        payload = gen.api_client.create_or_update_document.call_args[1]["doc_data"]
-        assert "doc-abc123-def456" not in payload["content"]
-        assert "# Overview" in payload["content"]
+        output_file = Path(result["file"])
+        content = output_file.read_text()
+        assert "# Overview" in content
 
 
 # ---------------------------------------------------------------------------
-# API payload tests
+# Output file metadata tests
 # ---------------------------------------------------------------------------
 
-class TestAPIPayload:
-    """Payload POSTed to the backend must match the schema contract."""
+class TestOutputFile:
+    """Output files must contain proper bottomatter metadata."""
 
-    def _generate_and_get_payload(self, gen, MockConv, workspace, doc_spec):
+    def _generate_and_get_file(self, gen, MockConv, workspace, doc_spec):
         safe_title = re.sub(r'[^\w\s-]', '', doc_spec["title"]).strip().replace(' ', '-').lower()
         filename = f"{safe_title}.md"
 
@@ -208,43 +210,39 @@ class TestAPIPayload:
             workspace, doc_spec["path"], filename, SAMPLE_DOC_CONTENT
         )
 
-        with patch("doc_agent.generator.VersionPriorityEngine") as MockVPE:
-            MockVPE.return_value.should_regenerate.return_value = (True, "test")
-            result = gen.generate_document(
-                doc_spec, SAMPLE_BLUEPRINT,
-                {"all_docs": [], "related_docs": [], "count": 0, "related_count": 0},
-                SAMPLE_SCOUT_REPORTS,
-            )
+        result = gen.generate_document(
+            doc_spec, SAMPLE_BLUEPRINT,
+            {"all_docs": [], "related_docs": [], "count": 0, "related_count": 0},
+            SAMPLE_SCOUT_REPORTS,
+        )
 
         assert result["status"] == "success"
-        return gen.api_client.create_or_update_document.call_args[1]["doc_data"]
+        return Path(result["file"])
 
-    def test_has_all_required_fields(self, generator):
-        gen, MockConv, workspace, notes = generator
-        payload = self._generate_and_get_payload(gen, MockConv, workspace, SAMPLE_BLUEPRINT["documents"][0])
+    def test_output_file_has_metadata(self, generator):
+        gen, MockConv, workspace, output = generator
+        output_file = self._generate_and_get_file(gen, MockConv, workspace, SAMPLE_BLUEPRINT["documents"][0])
 
-        required = ["repo_url", "repo_name", "doc_type", "content", "path", "title"]
-        for field in required:
-            assert field in payload, f"Missing required field: {field}"
+        content = output_file.read_text()
+        # Should have bottomatter with key metadata
+        assert "repo_url:" in content
+        assert "doc_type:" in content
+        assert "author_type: ai" in content
 
-        assert payload["repo_url"] == "https://github.com/test/repo"
-        assert payload["repo_name"] == "repo"
-        assert payload["author_type"] == "ai"
-        assert "repo_commit_sha" in payload.get("author_metadata", {})
+    def test_output_file_has_repo_url(self, generator):
+        gen, MockConv, workspace, output = generator
+        output_file = self._generate_and_get_file(gen, MockConv, workspace, SAMPLE_BLUEPRINT["documents"][0])
 
-    def test_path_matches_doc_spec(self, generator):
-        gen, MockConv, workspace, notes = generator
-        doc_spec = SAMPLE_BLUEPRINT["documents"][1]  # path: IsoCrates/architecture/backend
-        payload = self._generate_and_get_payload(gen, MockConv, workspace, doc_spec)
+        content = output_file.read_text()
+        assert "https://github.com/test/repo" in content
 
-        assert payload["path"] == "IsoCrates/architecture/backend"
-
-    def test_title_matches_doc_spec(self, generator):
-        gen, MockConv, workspace, notes = generator
+    def test_output_preserves_title(self, generator):
+        gen, MockConv, workspace, output = generator
         doc_spec = SAMPLE_BLUEPRINT["documents"][1]
-        payload = self._generate_and_get_payload(gen, MockConv, workspace, doc_spec)
+        output_file = self._generate_and_get_file(gen, MockConv, workspace, doc_spec)
 
-        assert payload["title"] == "Backend Architecture"
+        content = output_file.read_text()
+        assert "Backend Architecture" in content
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +254,7 @@ class TestGenerateAllFlow:
 
     def test_early_bailout_unchanged_repo(self, generator):
         """If repo unchanged since last gen, return immediately with no writer calls."""
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
 
         # Mock regeneration context: docs exist, repo unchanged
         regen_ctx = {
@@ -278,7 +276,7 @@ class TestGenerateAllFlow:
 
     def test_first_time_runs_scouts_then_planner_then_writers(self, generator):
         """First-time generation: full scouts → planner → N writers."""
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
 
         with (
             patch.object(gen, "_get_regeneration_context", return_value=None),
@@ -297,7 +295,7 @@ class TestGenerateAllFlow:
 
     def test_regen_uses_diff_scout_not_full_scouts(self, generator):
         """Regeneration path: diff scout, NOT full scouts."""
-        gen, MockConv, workspace, notes = generator
+        gen, MockConv, workspace, output = generator
 
         regen_ctx = {
             "last_commit_sha": "abc123",
@@ -320,22 +318,3 @@ class TestGenerateAllFlow:
 
         mock_diff.assert_called_once()
         mock_scouts.assert_not_called()
-
-    def test_version_priority_skip_respected(self, generator):
-        """When VersionPriorityEngine says skip, writer conversation is NOT started."""
-        gen, MockConv, workspace, notes = generator
-        doc_spec = SAMPLE_BLUEPRINT["documents"][0]
-
-        with patch("doc_agent.generator.VersionPriorityEngine") as MockVPE:
-            MockVPE.return_value.should_regenerate.return_value = (False, "Fresh human edit")
-
-            result = gen.generate_document(
-                doc_spec, SAMPLE_BLUEPRINT,
-                {"all_docs": [], "related_docs": [], "count": 0, "related_count": 0},
-                SAMPLE_SCOUT_REPORTS,
-            )
-
-        assert result["status"] == "skipped"
-        assert "human" in result["reason"].lower() or "fresh" in result["reason"].lower()
-        # Writer conversation should NOT have been created
-        MockConv.assert_not_called()

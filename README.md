@@ -1,6 +1,6 @@
 # Auto Doc Agent
 
-Three-tier autonomous documentation generator using the OpenHands SDK. Clones a repository, explores it with scout agents, plans documentation architecture, then writes focused markdown pages.
+Three-tier autonomous documentation generator using the OpenHands SDK. Point it at a repository (URL or local path), and it produces structured markdown documentation.
 
 ## Setup
 
@@ -34,20 +34,23 @@ WRITER_API_KEY=...
 
 # Output (optional)
 OUTPUT_DIR=./output        # where markdown files are written
-REPOS_DIR=./repos          # where repos are cloned
+REPOS_DIR=./repos          # where remote repos are cloned
 ```
 
 ## Usage
 
 ```bash
-# Generate docs for a repository
-python openhands_doc.py --repo https://github.com/user/repo
+# Generate docs from a remote repository (clones automatically)
+doc-agent https://github.com/facebook/react
 
-# With a collection prefix
-python openhands_doc.py --repo https://github.com/user/repo --collection backend/
+# Generate docs from a local directory
+doc-agent /path/to/local/repo
 
-# Single document type
-python openhands_doc.py --repo https://github.com/user/repo --doc-type architecture
+# Custom output directory
+doc-agent https://github.com/user/repo -o ./docs
+
+# With a collection prefix and specific doc type
+doc-agent /path/to/repo --collection backend --doc-type architecture
 ```
 
 ## Output Structure
@@ -59,10 +62,9 @@ output/
     architecture.md
     api-reference.md
     ...
-  .doc_registry.json       # metadata index
-  .versions/
-    doc-xxxx-yyyy.json      # per-document version history
 ```
+
+Each `.md` file includes bottomatter metadata (doc ID, repo URL, commit SHA, generation timestamp) for tracking regeneration state.
 
 ## Architecture
 
@@ -70,4 +72,4 @@ output/
 2. **Planner** (single, reasoning-only) -- designs documentation structure from scout reports
 3. **Writers** (one per document) -- each writes a focused wiki page in flowing prose
 
-Features: intelligent regeneration (respects human edits), git change detection, wikilinks, mermaid diagrams, security validation.
+Features: git-aware regeneration, wikilinks, mermaid diagrams, GFM tables, security validation.

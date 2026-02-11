@@ -1,7 +1,7 @@
 """Shared fixtures for the agent test suite.
 
 All tests run with zero API calls, zero network access, zero LLM credits.
-External deps (OpenHands SDK, OpenRouter, backend API) are mocked.
+External deps (OpenHands SDK) are mocked.
 """
 
 import sys
@@ -26,45 +26,43 @@ def tmp_workspace(tmp_path):
 
 
 @pytest.fixture
-def tmp_notes_dir(tmp_path):
-    """Temp directory for notes output."""
-    notes = tmp_path / "notes"
-    notes.mkdir()
-    return notes
+def tmp_output_dir(tmp_path):
+    """Temp directory for output."""
+    output = tmp_path / "output"
+    output.mkdir()
+    return output
 
 
 @pytest.fixture
-def generator(tmp_workspace, tmp_notes_dir, monkeypatch):
+def generator(tmp_workspace, tmp_output_dir, monkeypatch):
     """OpenHandsDocGenerator with all external deps mocked.
 
-    Yields (generator, MockConversation, workspace_path, notes_path).
+    Yields (generator, MockConversation, workspace_path, output_path).
     """
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-fake")
-    monkeypatch.setenv("NOTES_DIR", str(tmp_notes_dir))
-    monkeypatch.setenv("DOC_API_URL", "http://fake:9999")
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_output_dir))
 
     with (
         patch("doc_agent.generator.LLM"),
         patch("doc_agent.generator.Agent"),
         patch("doc_agent.generator.Conversation") as MockConv,
+        patch("doc_agent.generator.LLMSummarizingCondenser"),
         patch("doc_agent.generator.DocumentRegistry"),
-        patch("doc_agent.generator.DocumentAPIClient") as MockAPI,
-        patch("doc_agent.generator.VersionPriorityEngine") as MockVPE,
     ):
-        from doc_agent.generator import OpenHandsDocGenerator
+        import doc_agent.generator as gen_mod
 
-        MockVPE.return_value.should_regenerate.return_value = (True, "No existing document found")
+        # Module-level config is read at import time; override for tests
+        monkeypatch.setattr(gen_mod, "SCOUT_MODEL", "test/scout-model")
+        monkeypatch.setattr(gen_mod, "PLANNER_MODEL", "test/planner-model")
+        monkeypatch.setattr(gen_mod, "WRITER_MODEL", "test/writer-model")
+        monkeypatch.setattr(gen_mod, "LLM_BASE_URL", "http://test:1234")
+
+        from doc_agent.generator import OpenHandsDocGenerator
 
         gen = OpenHandsDocGenerator(
             repo_path=tmp_workspace,
             repo_url="https://github.com/test/repo",
+            output_dir=str(tmp_output_dir),
         )
-        gen.api_client = MockAPI.return_value
-        gen.api_client.create_or_update_document.return_value = {
-            "id": "doc-test-123",
-            "status": "created",
-        }
-        gen.api_client.get_all_documents.return_value = []
-        gen.api_client.get_documents_by_repo.return_value = []
 
-        yield gen, MockConv, tmp_workspace, tmp_notes_dir
+        yield gen, MockConv, tmp_workspace, tmp_output_dir

@@ -1,6 +1,7 @@
 """Security validators for input validation."""
 
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Tuple, Optional
 
@@ -57,6 +58,25 @@ class RepositoryValidator:
         # Reconstruct sanitized URL (owner/repo only)
         sanitized = f"https://{parsed.netloc}/{path_parts[0]}/{path_parts[1]}"
         return True, "", sanitized
+
+    @staticmethod
+    def validate_local_path(path_str: str) -> Tuple[bool, str, Optional[str]]:
+        """Validate a local repository path.
+
+        Args:
+            path_str: Filesystem path to validate
+
+        Returns:
+            Tuple of (is_valid, error_message, resolved_path)
+        """
+        path = Path(path_str)
+        if not path.exists():
+            return False, f"Path does not exist: {path_str}", None
+        if not path.is_dir():
+            return False, f"Path is not a directory: {path_str}", None
+        if not (path / ".git").exists():
+            return False, f"Path is not a git repository (no .git directory): {path_str}", None
+        return True, "", str(path.resolve())
 
 
 class PathValidator:

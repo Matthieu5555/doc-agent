@@ -21,10 +21,6 @@ def generate_doc_id(repo_url: str, path: str = "", title: str = "", doc_type: st
     """
     Generate a unique, stable ID for a document.
 
-    ⚠️  WARNING: This duplicates logic from backend/app/services/document_service.py
-        If you change hash lengths or algorithm, update BOTH places!
-        TODO: Extract to shared library or make agent call backend API
-
     New format: doc-{repo_hash}-{path_hash}
     Example: doc-a1b2c3d4-e5f6g7h8
 
@@ -40,7 +36,7 @@ def generate_doc_id(repo_url: str, path: str = "", title: str = "", doc_type: st
     Returns:
         Unique document ID
     """
-    # Hash lengths - MUST MATCH backend/app/services/document_service.py constants!
+    # Hash lengths for collision-resistant document IDs
     DOC_ID_REPO_HASH_LENGTH = 12  # Collision-resistant for ~10M repos
     DOC_ID_PATH_HASH_LENGTH = 12  # Combined with repo = 24-char unique ID
 
@@ -117,7 +113,7 @@ def parse_bottomatter(content: str) -> tuple[Optional[Dict], str]:
     return metadata, body
 
 
-def find_document_by_id(doc_id: str, notes_dir: Path = Path("/notes")) -> Optional[Path]:
+def find_document_by_id(doc_id: str, notes_dir: Path = Path("./output")) -> Optional[Path]:
     """
     Search for a document with the given ID by scanning metadata (frontmatter or bottomatter).
 

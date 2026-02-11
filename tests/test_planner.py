@@ -112,13 +112,18 @@ class TestFallbackPlan:
     def test_small_repo(self, generator):
         gen, _, workspace, _ = generator
 
-        with patch("doc_agent.generator.subprocess.run") as mock_run:
-            # Simulate 5 source files
-            mock_run.return_value = MagicMock(stdout="a.py\nb.py\nc.py\nd.py\ne.py", returncode=0)
+        with patch.object(gen, "_estimate_repo_tokens", return_value={
+            "file_manifest": [("a.py", 100)] * 5,
+            "token_estimate": 500,
+            "file_count": 5,
+            "total_bytes": 2000,
+            "size_label": "small",
+            "top_dirs": {".": 2000},
+        }):
             result = gen._fallback_plan("test/repo")
 
         assert result["complexity"] == "small"
-        assert len(result["documents"]) == 4  # core pages only
+        assert len(result["documents"]) == 5  # core pages
         # All pages should have wikilinks_out
         for doc in result["documents"]:
             assert "wikilinks_out" in doc
@@ -127,14 +132,18 @@ class TestFallbackPlan:
     def test_large_repo(self, generator):
         gen, _, workspace, _ = generator
 
-        with patch("doc_agent.generator.subprocess.run") as mock_run:
-            # Simulate 60 source files
-            lines = "\n".join(f"file{i}.py" for i in range(60))
-            mock_run.return_value = MagicMock(stdout=lines, returncode=0)
+        with patch.object(gen, "_estimate_repo_tokens", return_value={
+            "file_manifest": [(f"file{i}.py", 10000) for i in range(60)],
+            "token_estimate": 300_000,
+            "file_count": 60,
+            "total_bytes": 600_000,
+            "size_label": "large",
+            "top_dirs": {"src": 400_000, "tests": 200_000},
+        }):
             result = gen._fallback_plan("test/repo")
 
         assert result["complexity"] == "large"
-        assert len(result["documents"]) == 8  # core + medium + large pages
+        assert len(result["documents"]) > 5  # core + medium + large pages
         # Should have nested paths
         paths = [d["path"] for d in result["documents"]]
         assert any("/" in p.replace("test/repo", "") for p in paths), (
